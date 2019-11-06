@@ -14,7 +14,7 @@ object DynamoDBMigratorConfig {
   def loadFrom(path: String): DynamoDBMigratorConfig = {
     val configData = scala.io.Source.fromFile(path).mkString
 
-    parser
+    io.circe.yaml.parser
       .parse(configData)
       .leftWiden[Error]
       .flatMap(_.as[DynamoDBMigratorConfig])

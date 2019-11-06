@@ -11,17 +11,23 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Paths
 import java.nio.file.Files
 
+import com.typesafe.config.Config
+import com.typesafe.config.ConfigFactory
+import com.typesafe.config.ConfigParseOptions
+import com.typesafe.config.ConfigSyntax
 import com.datastax.spark.connector.writer.TokenRangeAccumulator
 import com.datastax.spark.connector.rdd.ReadConf
 import com.datastax.spark.connector.types.CassandraOption
 import com.datastax.spark.connector.writer.{ SqlRowWriter, TTLOption, TimestampOption, WriteConf }
 import org.apache.log4j.LogManager
+import org.apache.spark
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.cassandra._
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.types.{ LongType, StructField, StructType }
 import sun.misc.{ Signal, SignalHandler }
+import com.datastax.spark.connector._
 
 sealed trait CopyType
 object CopyType {
@@ -336,16 +342,76 @@ object Migrator {
   def main(args: Array[String]): Unit = {
     implicit val spark = SparkSession
       .builder()
+      //.master("local")
       .appName("scylla-migrator")
       .config("spark.cassandra.dev.customFromDriver", "com.scylladb.migrator.CustomUUIDConverter")
       .config("spark.task.maxFailures", "1024")
       .config("spark.stage.maxConsecutiveAttempts", "60")
       .getOrCreate
 
-    val migratorConfig =
-      MigratorConfig.loadFrom(spark.conf.get("spark.scylla.config"))
+    var appConfig = ConfigFactory.empty
+
+    for (conf <- args) {
+      val argsConfig = ConfigFactory.parseString(
+        conf,
+        ConfigParseOptions.defaults.setSyntax(ConfigSyntax.PROPERTIES))
+      System.out.println(conf + "-----" + argsConfig)
+      appConfig = appConfig.withFallback(argsConfig)
+    }
+
+    val tourIds = appConfig.getString("tourIds").split(",")
+    val tablesToMigrate = appConfig.getString("tablesToMigrate").split((","))
+
+//    val migratorConfig =
+//      MigratorConfig.loadFrom(spark.conf.get("spark.scylla.config"))
+
+    var migratorConfig =
+      MigratorConfig.load(appConfig)
 
     log.info(s"Loaded config: ${migratorConfig}")
+
+    if (tourIds.size > 0) {
+      tourIds.map(tid =>
+        tablesToMigrate.map(table => {
+
+          val source = SourceSettings(
+            migratorConfig.source.host,
+            migratorConfig.source.port,
+            migratorConfig.source.credentials,
+            migratorConfig.source.keyspace,
+            table + tid,
+            migratorConfig.source.splitCount,
+            migratorConfig.source.connections,
+            migratorConfig.source.fetchSize
+          );
+
+          val target = TargetSettings(
+            migratorConfig.target.host,
+            migratorConfig.target.port,
+            migratorConfig.target.credentials,
+            migratorConfig.target.keyspace,
+            table + tid,
+            migratorConfig.target.connections
+          )
+
+          val migrator = MigratorConfig(
+            source,
+            target,
+            migratorConfig.preserveTimestamps,
+            migratorConfig.renames,
+            migratorConfig.savepoints,
+            migratorConfig.skipTokenRanges)
+
+          migrate(migrator, spark)
+        }))
+    } else {
+      migrate(migratorConfig, spark)
+    }
+    spark.stop()
+  }
+
+  def migrate(migratorConfig: MigratorConfig, spark1: SparkSession): Unit = {
+    implicit val spark = spark1
 
     val (origSchema, tableDef, sourceDF, copyType) =
       readDataframe(
@@ -383,7 +449,7 @@ object Migrator {
     } finally {
       dumpAccumulatorState(migratorConfig, tokenRangeAccumulator, "final")
       scheduler.shutdown()
-      spark.stop()
+
     }
   }
 
@@ -392,24 +458,21 @@ object Migrator {
 
   def dumpAccumulatorState(config: MigratorConfig,
                            accumulator: TokenRangeAccumulator,
-                           reason: String): Unit = {
-    val filename =
-      Paths.get(savepointFilename(config.savepoints.path)).normalize
-    val rangesToSkip = accumulator.value.get.map { range =>
-      (
-        range.range.start.asInstanceOf[LongToken].value,
-        range.range.end.asInstanceOf[LongToken].value)
-    }
-
-    val modifiedConfig = config.copy(
-      skipTokenRanges = config.skipTokenRanges ++ rangesToSkip
-    )
-
-    Files.write(filename, modifiedConfig.render.getBytes(StandardCharsets.UTF_8))
-
-    log.info(
-      s"Created a savepoint config at ${filename} due to ${reason}. Ranges added: ${rangesToSkip}")
-  }
+                           reason: String): Unit =
+//    val filename =
+//      Paths.get(savepointFilename(config.savepoints.path)).normalize
+//    val rangesToSkip = accumulator.value.get.map { range =>
+//      (
+//        range.range.start.asInstanceOf[LongToken].value,
+//        range.range.end.asInstanceOf[LongToken].value)
+//    }
+//
+//    val modifiedConfig = config.copy(
+//      skipTokenRanges = config.skipTokenRanges ++ rangesToSkip
+//    )
+//
+//    Files.write(filename, modifiedConfig.render.getBytes(StandardCharsets.UTF_8))
+    log.info(s"Created a savepoint config at ") //${filename} due to ${reason}. Ranges added: ${rangesToSkip}")
 
   def startSavepointSchedule(svc: ScheduledThreadPoolExecutor,
                              config: MigratorConfig,

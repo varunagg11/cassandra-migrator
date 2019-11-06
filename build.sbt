@@ -23,16 +23,24 @@ lazy val root = (project in file(".")).
       "org.apache.spark" %% "spark-sql" % "2.3.1" % "provided",
 
       "com.amazon.emr" % "emr-dynamodb-hadoop" % "4.8.0" exclude("joda-time", "joda-time"),
+      "com.typesafe" % "config" % "1.3.1",
+      "com.typesafe.play" %% "play-json" % "2.3.0",
 
       "org.yaml" % "snakeyaml" % "1.23",
       "io.circe" %% "circe-yaml" % "0.9.0",
       "io.circe" %% "circe-generic" % "0.9.0",
+      "io.circe" %% "circe-parser" % "0.9.0",
 
       "commons-configuration" % "commons-configuration" % "1.10",
 
       "org.scalatest" %% "scalatest" % "3.0.1" % "test",
       "org.scalacheck" %% "scalacheck" % "1.13.4" % "test"
     ),
+
+    assemblyMergeStrategy in assembly := {
+      case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+      case x => MergeStrategy.first
+    },
 
     assemblyShadeRules in assembly := Seq(
       ShadeRule.rename("org.yaml.snakeyaml.**" -> "shaded.@1").inAll
